@@ -10,6 +10,7 @@ import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import android.os.PowerManager
 import android.os.Process
+import android.system.Os
 import java.io.File
 import kotlin.concurrent.thread
 
@@ -26,6 +27,7 @@ class RecompService : Service() {
         const val EXTRA_LOG = "log"
         const val EXTRA_STATUS = "status"
         const val EXTRA_DISC_URI = "disc_uri"
+        const val EXTRA_DISC_EXT = "disc_ext"
 
         @Volatile private var statusPath: String? = null
     }
@@ -59,6 +61,7 @@ class RecompService : Service() {
         val log = i.getStringExtra(EXTRA_LOG) ?: return
         val status = File(i.getStringExtra(EXTRA_STATUS) ?: return)
         val discUri = i.getStringExtra(EXTRA_DISC_URI)
+        val discExt = i.getStringExtra(EXTRA_DISC_EXT) ?: ".iso"
         statusPath = status.path
 
         val wl = (getSystemService(Context.POWER_SERVICE) as PowerManager)
@@ -71,10 +74,17 @@ class RecompService : Service() {
             var pfd: ParcelFileDescriptor? = null
             try {
                 // Disc images are opened by file descriptor so multi-GB files are never copied.
+                // DolRecomp decides the format from the file extension, and /proc/self/fd/N has
+                // none, so expose the descriptor through a symlink that ends in .iso / .wbfs.
+                var link: File? = null
                 val resolved = args.map { a ->
                     if (a.contains("{DISC}") && discUri != null) {
-                        if (pfd == null) pfd = contentResolver.openFileDescriptor(Uri.parse(discUri), "r")
-                        a.replace("{DISC}", "/proc/self/fd/${pfd!!.fd}")
+                        if (link == null) {
+                            pfd = contentResolver.openFileDescriptor(Uri.parse(discUri), "r")
+                            link = File(cacheDir, "disc-input$discExt").also { it.delete() }
+                            Os.symlink("/proc/self/fd/${pfd!!.fd}", link!!.path)
+                        }
+                        a.replace("{DISC}", link!!.path)
                     } else a
                 }
                 rc = NativeBridge.nativeRun(resolved.toTypedArray(), log)

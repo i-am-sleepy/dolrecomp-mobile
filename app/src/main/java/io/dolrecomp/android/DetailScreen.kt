@@ -114,6 +114,11 @@ fun DetailScreen(store: ProjectStore, id: String, go: Go) {
     }
     val pickDisc = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) {
+            val ext = "." + Files.displayName(ctx, uri).substringAfterLast('.', "").lowercase()
+            if (ext != ".iso" && ext != ".wbfs") {
+                msg = "DolRecomp only reads plain .iso or .wbfs images (this one is “$ext”). Compressed formats like .rvz, .gcz, .ciso or .nkit need converting to .iso first."
+                return@rememberLauncherForActivityResult
+            }
             runCatching { ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
             update(p.copy(discUri = uri.toString()))
             val wit = File(ctx.applicationInfo.nativeLibraryDir, "libwit.so")
@@ -122,7 +127,7 @@ fun DetailScreen(store: ProjectStore, id: String, go: Go) {
                 if (wit.exists()) { add("--wit"); add(wit.path) }
                 add("{DISC}"); add(store.discDir(p).path)
             }
-            Runner.start(ctx, store, p, args, uri.toString())
+            Runner.start(ctx, store, p, args, uri.toString(), ext)
             go("console", id)
         }
     }

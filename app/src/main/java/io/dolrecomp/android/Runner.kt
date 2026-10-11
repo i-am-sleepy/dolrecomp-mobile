@@ -7,7 +7,7 @@ import java.io.File
 import java.io.RandomAccessFile
 
 object Runner {
-    fun start(ctx: Context, store: ProjectStore, p: Project, args: List<String>, discUri: String? = null) {
+    fun start(ctx: Context, store: ProjectStore, p: Project, args: List<String>, discUri: String? = null, discExt: String? = null) {
         store.logFile(p).writeText("")
         store.statusFile(p).writeText("starting")
         val i = Intent(ctx, RecompService::class.java).setAction(RecompService.ACTION_RUN)
@@ -15,6 +15,7 @@ object Runner {
             .putExtra(RecompService.EXTRA_LOG, store.logFile(p).path)
             .putExtra(RecompService.EXTRA_STATUS, store.statusFile(p).path)
             .putExtra(RecompService.EXTRA_DISC_URI, discUri)
+            .putExtra(RecompService.EXTRA_DISC_EXT, discExt)
         ctx.startForegroundService(i)
     }
 
