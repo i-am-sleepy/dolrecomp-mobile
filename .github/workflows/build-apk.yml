@@ -1,0 +1,71 @@
+name: Build APK
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      dolrecomp_ref:
+        description: "DolRecomp branch, tag or commit"
+        default: "main"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # Phone-friendly bootstrap: upload dolrecomp-android.zip to the repo root
+      # and this step unpacks it (the workflow file itself is never overwritten).
+      - name: Unpack uploaded project zip
+        run: |
+          if [ -f dolrecomp-android.zip ]; then
+            unzip -o dolrecomp-android.zip -x ".github/*"
+            rm dolrecomp-android.zip
+            git config user.name "github-actions"
+            git config user.email "actions@github.com"
+            git add -A
+            git commit -m "Unpack project" || true
+            git push
+          fi
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ExpansionPak/DolRecomp
+          ref: ${{ inputs.dolrecomp_ref || 'main' }}
+          path: native/DolRecomp
+          submodules: recursive
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platforms;android-35" "build-tools;34.0.0" "cmake;3.22.1" "ndk;26.1.10909125"
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.9"
+
+      - name: Build release APK
+        run: gradle --no-daemon assembleRelease
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dolrecomp-android-apk
+          path: app/build/outputs/apk/release/*.apk
+
+      - name: Publish to the "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view latest >/dev/null 2>&1 || \
+            gh release create latest --title "Latest build" --notes "Automated build"
+          gh release upload latest app/build/outputs/apk/release/app-release.apk --clobber
