@@ -20,6 +20,9 @@ android {
             cmake {
                 // CI checks DolRecomp out into native/DolRecomp
                 arguments += "-DDOLRECOMP_DIR=${rootProject.projectDir}/native/DolRecomp"
+                // Build only our library, not DolRecomp's test executables
+                // (those can't run on the build machine when cross-compiled).
+                targets += "dolrecomp_jni"
             }
         }
     }
