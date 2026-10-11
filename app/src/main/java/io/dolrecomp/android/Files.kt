@@ -40,7 +40,7 @@ object Files {
     /** Inputs DolRecomp can take: .dol/.rpx files and folders that hold .rel modules. */
     fun inputCandidates(base: File): List<File> {
         val all = base.walkTopDown()
-            .filter { it.isFile && !it.path.contains("/out/") && it.extension.lowercase() in setOf("dol", "rel", "rpx") }
+            .filter { it.isFile && !it.path.contains("/out/") && !it.path.contains("-recompiled/") && it.extension.lowercase() in setOf("dol", "rel", "rpx") }
             .toList()
         val relDirs = all.filter { it.extension.equals("rel", true) }.mapNotNull { it.parentFile }.distinct()
         return all.filter { !it.extension.equals("rel", true) } + relDirs
@@ -69,21 +69,29 @@ object Files {
         if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager()
         else ctx.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
 
+    private fun volumePath(docId: String): String {
+        val vol = docId.substringBefore(':')
+        val rel = docId.substringAfter(':', "")
+        val base = if (vol.equals("primary", true)) Environment.getExternalStorageDirectory().path else "/storage/$vol"
+        return File(base, rel).path
+    }
+
     /** Best-effort real file path for a picked document; null if it can't be worked out. */
     fun realPath(uri: Uri): String? = runCatching {
         when (uri.authority) {
-            "com.android.externalstorage.documents" -> {
-                val id = DocumentsContract.getDocumentId(uri)
-                val vol = id.substringBefore(':')
-                val rel = id.substringAfter(':', "")
-                val base = if (vol.equals("primary", true)) Environment.getExternalStorageDirectory().path else "/storage/$vol"
-                File(base, rel).path
-            }
+            "com.android.externalstorage.documents" -> volumePath(DocumentsContract.getDocumentId(uri))
             "com.android.providers.downloads.documents" -> {
                 val id = DocumentsContract.getDocumentId(uri)
                 if (id.startsWith("raw:")) id.removePrefix("raw:") else null
             }
             else -> null
         }
+    }.getOrNull()
+
+    /** Real folder path for a picked folder (document tree); null if it can't be worked out. */
+    fun realTreePath(uri: Uri): String? = runCatching {
+        if (uri.authority == "com.android.externalstorage.documents")
+            volumePath(DocumentsContract.getTreeDocumentId(uri))
+        else null
     }.getOrNull()
 }

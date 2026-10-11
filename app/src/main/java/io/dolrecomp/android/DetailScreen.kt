@@ -95,31 +95,59 @@ fun DetailScreen(store: ProjectStore, id: String, go: Go) {
         }
     }
 
+    // --- all-files-access plumbing: anything that wants to work "in place" next to the input
+    //     goes through requireAccess(); declining just falls back to the app's own folder.
+    var afterAccess by remember { mutableStateOf<(() -> Unit)?>(null) }
+    var showAccess by remember { mutableStateOf(false) }
+    val afterGrant: () -> Unit = { val a = afterAccess; afterAccess = null; a?.invoke() }
+    val grantLegacy = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> afterGrant() }
+    val grantAll = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { _ -> afterGrant() }
+    fun requireAccess(action: () -> Unit) {
+        if (Files.hasStorageAccess(ctx)) action() else { afterAccess = action; showAccess = true }
+    }
+
     val pickFile = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
-        if (uri != null) scope.launch {
+        if (uri != null) {
             val key = pendingKey
-            val name = withContext(Dispatchers.IO) {
-                Files.displayName(ctx, uri).also { Files.copyUri(ctx, uri, File(store.filesDir(p), it)) }
+            val importIt: () -> Unit = {
+                val real = if (key == "__input__")
+                    Files.realPath(uri)?.takeIf { Files.hasStorageAccess(ctx) && File(it).canRead() } else null
+                if (real != null) {
+                    update(p.copy(input = real))
+                    msg = "Using ${File(real).name} in place; output goes next to it"
+                } else scope.launch {
+                    val name = withContext(Dispatchers.IO) {
+                        Files.displayName(ctx, uri).also { Files.copyUri(ctx, uri, File(store.filesDir(p), it)) }
+                    }
+                    val dest = File(store.filesDir(p), name).path
+                    if (key == "__input__") update(p.copy(input = dest)) else update(p.copy(options = p.options + (key to dest)))
+                    msg = "Imported $name into the app folder"
+                }
             }
-            val dest = File(store.filesDir(p), name).path
-            if (key == "__input__") update(p.copy(input = dest)) else update(p.copy(options = p.options + (key to dest)))
-            msg = "Imported $name"
+            if (key == "__input__") requireAccess(importIt) else importIt()
         }
     }
     val pickTree = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
-        if (uri != null) scope.launch {
-            val tree = DocumentFile.fromTreeUri(ctx, uri)
-            val dest = File(store.filesDir(p), "rels_" + (tree?.name ?: "folder").replace('/', '_'))
-            val n = withContext(Dispatchers.IO) { if (tree != null) Files.copyRels(ctx, tree, dest) else 0 }
-            if (n > 0) update(p.copy(input = dest.path))
-            msg = if (n > 0) "Imported $n .rel files" else "No .rel files found in that folder"
+        if (uri != null) {
+            val importIt: () -> Unit = {
+                val real = Files.realTreePath(uri)?.takeIf { Files.hasStorageAccess(ctx) && File(it).isDirectory }
+                if (real != null) {
+                    update(p.copy(input = real))
+                    msg = "Using folder ${File(real).name} in place; output goes next to it"
+                } else scope.launch {
+                    val tree = DocumentFile.fromTreeUri(ctx, uri)
+                    val dest = File(store.filesDir(p), "rels_" + (tree?.name ?: "folder").replace('/', '_'))
+                    val n = withContext(Dispatchers.IO) { if (tree != null) Files.copyRels(ctx, tree, dest) else 0 }
+                    if (n > 0) update(p.copy(input = dest.path))
+                    msg = if (n > 0) "Imported $n .rel files into the app folder" else "No .rel files found in that folder"
+                }
+            }
+            requireAccess(importIt)
         }
     }
-    var accessFor by remember { mutableStateOf<Pair<Uri, String>?>(null) }
-    var showAccess by remember { mutableStateOf(false) }
 
-    // Extracts next to the ISO when the real path is known and file access is granted;
-    // otherwise falls back to a temporary copy and the app's own folder.
+    // Extracts to "<iso name>-extracted" next to the ISO when the real path is known and file
+    // access is granted; otherwise falls back to a temporary copy and the app's own folder.
     fun startExtract(uri: Uri, ext: String) {
         val wit = File(ctx.applicationInfo.nativeLibraryDir, "libwit.so")
         val real = Files.realPath(uri)?.takeIf { Files.hasStorageAccess(ctx) && File(it).canRead() }
@@ -129,7 +157,7 @@ fun DetailScreen(store: ProjectStore, id: String, go: Go) {
         if (real != null) {
             val f = File(real)
             src = real
-            outDir = File(f.parentFile, f.nameWithoutExtension)
+            outDir = File(f.parentFile, f.nameWithoutExtension + "-extracted")
             update(p.copy(extractDir = outDir.path, discUri = uri.toString()))
         } else {
             src = "{DISC}"
@@ -146,14 +174,6 @@ fun DetailScreen(store: ProjectStore, id: String, go: Go) {
         go("console", id)
     }
 
-    val afterGrant: () -> Unit = {
-        val a = accessFor
-        accessFor = null
-        if (a != null) startExtract(a.first, a.second)
-    }
-    val grantLegacy = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> afterGrant() }
-    val grantAll = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { _ -> afterGrant() }
-
     val pickDisc = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) {
             val ext = "." + Files.displayName(ctx, uri).substringAfterLast('.', "").lowercase()
@@ -161,8 +181,7 @@ fun DetailScreen(store: ProjectStore, id: String, go: Go) {
                 msg = "DolRecomp only reads plain .iso or .wbfs images (this one is “$ext”). Compressed formats like .rvz, .gcz, .ciso or .nkit need converting to .iso first."
             } else {
                 runCatching { ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-                if (Files.hasStorageAccess(ctx)) startExtract(uri, ext)
-                else { accessFor = uri to ext; showAccess = true }
+                requireAccess { startExtract(uri, ext) }
             }
         }
     }
@@ -194,7 +213,7 @@ fun DetailScreen(store: ProjectStore, id: String, go: Go) {
                 OutlinedTextField(p.titleId.uppercase(), { update(p.copy(titleId = it.take(6))) }, label = { Text("Wii title ID (6 chars)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
 
             Text("Disc image", style = MaterialTheme.typography.titleMedium)
-            Text("Pick a GameCube .iso. It is extracted into a folder named after the ISO, next to it (the app asks for file access once; without it, the app's own folder is used). Wii .iso/.wbfs also needs the external “wit” tool, which this build doesn't include yet.", style = MaterialTheme.typography.bodySmall)
+            Text("Pick a GameCube .iso. It is extracted into “<name>-extracted”, next to the ISO (the app asks for file access once; without it, the app's own folder is used). Wii .iso/.wbfs also needs the external “wit” tool, which this build doesn't include yet.", style = MaterialTheme.typography.bodySmall)
             if (p.extractDir.isNotBlank()) Text("Last extracted to: ${p.extractDir}", style = MaterialTheme.typography.bodySmall)
             OutlinedButton(onClick = { pickDisc.launch(arrayOf("*/*")) }, Modifier.fillMaxWidth(), enabled = !busy) { Text("Extract a disc image…") }
 
@@ -226,7 +245,10 @@ fun DetailScreen(store: ProjectStore, id: String, go: Go) {
             Text("Status: $status")
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = {
-                    if (err != null) msg = err else { Runner.start(ctx, store, p, store.buildArgs(p)); go("console", id) }
+                    if (err != null) msg = err else {
+                        store.outDir(p).mkdirs()
+                        Runner.start(ctx, store, p, store.buildArgs(p)); go("console", id)
+                    }
                 }, enabled = !busy) { Text("Run") }
                 OutlinedButton(onClick = { go("console", id) }) { Text("Console") }
                 OutlinedButton(onClick = { go("output", id) }) { Text("Output") }
@@ -259,7 +281,7 @@ fun DetailScreen(store: ProjectStore, id: String, go: Go) {
     if (showAccess) AlertDialog(
         onDismissRequest = { showAccess = false; afterGrant() },
         title = { Text("Allow file access?") },
-        text = { Text("To extract next to the disc image, DolRecomp needs permission to read and write files in shared storage. If you skip this, the disc is extracted into the app's own folder instead.") },
+        text = { Text("To read your files in place and write results next to them (-extracted / -recompiled folders), DolRecomp needs permission to read and write files in shared storage. If you skip this, files are copied into the app's own folder instead.") },
         confirmButton = {
             TextButton(onClick = {
                 showAccess = false

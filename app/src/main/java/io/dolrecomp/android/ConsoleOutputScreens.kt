@@ -97,7 +97,7 @@ fun OutputScreen(store: ProjectStore, id: String, go: Go) {
                 Button(onClick = { export.launch("${p.name.replace(' ', '_')}-generated.zip") }, enabled = files.isNotEmpty()) { Text("Export as .zip") }
                 OutlinedButton(onClick = {
                     scope.launch {
-                        withContext(Dispatchers.IO) { store.outDir(p).deleteRecursively(); store.outDir(p); refresh() }
+                        withContext(Dispatchers.IO) { store.outDir(p).deleteRecursively(); refresh() }
                         msg = "Output cleared"
                     }
                 }) { Text("Clear") }

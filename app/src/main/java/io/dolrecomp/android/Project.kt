@@ -25,7 +25,16 @@ class ProjectStore(private val ctx: Context) {
 
     fun dir(p: Project) = File(root, p.id).apply { mkdirs() }
     fun filesDir(p: Project) = File(dir(p), "files").apply { mkdirs() }
-    fun outDir(p: Project) = File(dir(p), "out").apply { mkdirs() }
+    /**
+     * Recompile output goes next to the input as "<input name>-recompiled" when the input lives
+     * in shared storage; inputs kept inside the app folder use the project's own out/ folder.
+     * Pure lookup: the folder is created when a run starts.
+     */
+    fun outDir(p: Project): File {
+        val inp = File(p.input)
+        val outside = p.input.isNotBlank() && !inp.path.startsWith(root.path) && inp.parentFile?.canWrite() == true
+        return if (outside) File(inp.parentFile, inp.name + "-recompiled") else File(dir(p), "out")
+    }
     fun discDir(p: Project) = File(dir(p), "disc")
     fun logFile(p: Project) = File(dir(p), "run.log")
     fun statusFile(p: Project) = File(dir(p), "run.status")
