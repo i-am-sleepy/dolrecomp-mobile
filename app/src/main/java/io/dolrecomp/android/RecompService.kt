@@ -7,11 +7,11 @@ import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.os.Build
 import android.os.IBinder
-import android.os.ParcelFileDescriptor
 import android.os.PowerManager
 import android.os.Process
-import android.system.Os
+import android.provider.OpenableColumns
 import java.io.File
+import java.io.IOException
 import kotlin.concurrent.thread
 
 /**
@@ -30,6 +30,7 @@ class RecompService : Service() {
         const val EXTRA_DISC_EXT = "disc_ext"
 
         @Volatile private var statusPath: String? = null
+        @Volatile private var tempDisc: File? = null
     }
 
     override fun onBind(intent: Intent?): IBinder? = null
@@ -71,20 +72,11 @@ class RecompService : Service() {
         status.writeText("running")
         thread(name = "dolrecomp") {
             var rc: Int
-            var pfd: ParcelFileDescriptor? = null
             try {
-                // Disc images are opened by file descriptor so multi-GB files are never copied.
-                // DolRecomp decides the format from the file extension, and /proc/self/fd/N has
-                // none, so expose the descriptor through a symlink that ends in .iso / .wbfs.
-                var link: File? = null
                 val resolved = args.map { a ->
                     if (a.contains("{DISC}") && discUri != null) {
-                        if (link == null) {
-                            pfd = contentResolver.openFileDescriptor(Uri.parse(discUri), "r")
-                            link = File(cacheDir, "disc-input$discExt").also { it.delete() }
-                            Os.symlink("/proc/self/fd/${pfd!!.fd}", link!!.path)
-                        }
-                        a.replace("{DISC}", link!!.path)
+                        if (tempDisc == null) tempDisc = copyDisc(Uri.parse(discUri), discExt, log)
+                        a.replace("{DISC}", tempDisc!!.path)
                     } else a
                 }
                 rc = NativeBridge.nativeRun(resolved.toTypedArray(), log)
@@ -92,13 +84,47 @@ class RecompService : Service() {
                 File(log).appendText("\n[app] ${t}\n")
                 rc = -2
             }
+            tempDisc?.delete()
             status.writeText(if (rc == 0) "ok" else "failed:$rc")
             Process.killProcess(Process.myPid())
         }
     }
 
+    /**
+     * DolRecomp needs a real file path. Re-opening the picked document through /proc/self/fd
+     * is blocked by Android's storage layer, so make a temporary copy in app storage
+     * (deleted when the job ends).
+     */
+    private fun copyDisc(uri: Uri, ext: String, log: String): File {
+        val logf = File(log)
+        val dest = File(cacheDir, "disc-input$ext").also { it.delete() }
+        val total = contentResolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)
+            ?.use { c -> if (c.moveToFirst()) c.getLong(0) else -1L } ?: -1L
+        if (total > 0 && cacheDir.usableSpace < total + (64L shl 20))
+            throw IOException("Not enough free storage: need about ${total shr 20} MB for a temporary copy of the disc, only ${cacheDir.usableSpace shr 20} MB free")
+        logf.appendText("[app] copying the disc image to temporary storage (${total shr 20} MB)…\n")
+        var done = 0L
+        var mark = 10
+        val input = contentResolver.openInputStream(uri) ?: throw IOException("Cannot open the picked disc image")
+        input.use { i ->
+            dest.outputStream().use { o ->
+                val buf = ByteArray(1 shl 20)
+                while (true) {
+                    val r = i.read(buf)
+                    if (r < 0) break
+                    o.write(buf, 0, r)
+                    done += r
+                    if (total > 0 && done * 100 / total >= mark) { logf.appendText("[app] copied $mark%\n"); mark += 10 }
+                }
+            }
+        }
+        logf.appendText("[app] copy finished, extracting…\n")
+        return dest
+    }
+
     private fun cancel() {
         statusPath?.let { File(it).writeText("cancelled") }
+        tempDisc?.delete()
         Process.killProcess(Process.myPid())
     }
 }
