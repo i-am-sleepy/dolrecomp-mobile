@@ -16,6 +16,8 @@ data class Project(
     val extraArgs: String = "",
     /** Content URI of the last disc image picked for extraction. */
     val discUri: String = "",
+    /** Where the last disc extraction went (next to the ISO, or the app folder when blank). */
+    val extractDir: String = "",
 )
 
 class ProjectStore(private val ctx: Context) {
@@ -43,13 +45,14 @@ class ProjectStore(private val ctx: Context) {
             options = o.keys().asSequence().associateWith { o.getString(it) },
             extraArgs = j.optString("extraArgs"),
             discUri = j.optString("discUri"),
+            extractDir = j.optString("extractDir"),
         )
     }.getOrNull()
 
     fun save(p: Project) {
         val j = JSONObject()
             .put("name", p.name).put("platform", p.platform.name).put("input", p.input)
-            .put("titleId", p.titleId).put("extraArgs", p.extraArgs).put("discUri", p.discUri)
+            .put("titleId", p.titleId).put("extraArgs", p.extraArgs).put("discUri", p.discUri).put("extractDir", p.extractDir)
             .put("options", JSONObject(p.options))
         File(dir(p), "project.json").writeText(j.toString(2))
     }

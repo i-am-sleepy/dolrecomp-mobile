@@ -1,6 +1,11 @@
 package io.dolrecomp.android
 
+import android.Manifest
 import android.content.Context
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.Environment
+import android.provider.DocumentsContract
 import android.net.Uri
 import android.provider.OpenableColumns
 import androidx.documentfile.provider.DocumentFile
@@ -59,4 +64,26 @@ object Files {
         n >= 1L shl 10 -> "%.1f KB".format(n / 1024.0)
         else -> "$n B"
     }
+
+    fun hasStorageAccess(ctx: Context): Boolean =
+        if (Build.VERSION.SDK_INT >= 30) Environment.isExternalStorageManager()
+        else ctx.checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
+
+    /** Best-effort real file path for a picked document; null if it can't be worked out. */
+    fun realPath(uri: Uri): String? = runCatching {
+        when (uri.authority) {
+            "com.android.externalstorage.documents" -> {
+                val id = DocumentsContract.getDocumentId(uri)
+                val vol = id.substringBefore(':')
+                val rel = id.substringAfter(':', "")
+                val base = if (vol.equals("primary", true)) Environment.getExternalStorageDirectory().path else "/storage/$vol"
+                File(base, rel).path
+            }
+            "com.android.providers.downloads.documents" -> {
+                val id = DocumentsContract.getDocumentId(uri)
+                if (id.startsWith("raw:")) id.removePrefix("raw:") else null
+            }
+            else -> null
+        }
+    }.getOrNull()
 }

@@ -1,6 +1,9 @@
 package io.dolrecomp.android
 
+import android.Manifest
 import android.content.Intent
+import android.os.Build
+import android.provider.Settings
 import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -112,27 +115,60 @@ fun DetailScreen(store: ProjectStore, id: String, go: Go) {
             msg = if (n > 0) "Imported $n .rel files" else "No .rel files found in that folder"
         }
     }
+    var accessFor by remember { mutableStateOf<Pair<Uri, String>?>(null) }
+    var showAccess by remember { mutableStateOf(false) }
+
+    // Extracts next to the ISO when the real path is known and file access is granted;
+    // otherwise falls back to a temporary copy and the app's own folder.
+    fun startExtract(uri: Uri, ext: String) {
+        val wit = File(ctx.applicationInfo.nativeLibraryDir, "libwit.so")
+        val real = Files.realPath(uri)?.takeIf { Files.hasStorageAccess(ctx) && File(it).canRead() }
+        val src: String
+        val outDir: File
+        var copyFrom: String? = null
+        if (real != null) {
+            val f = File(real)
+            src = real
+            outDir = File(f.parentFile, f.nameWithoutExtension)
+            update(p.copy(extractDir = outDir.path, discUri = uri.toString()))
+        } else {
+            src = "{DISC}"
+            outDir = store.discDir(p)
+            copyFrom = uri.toString()
+            update(p.copy(extractDir = "", discUri = uri.toString()))
+        }
+        val args = buildList {
+            add("extract")
+            if (wit.exists()) { add("--wit"); add(wit.path) }
+            add(src); add(outDir.path)
+        }
+        Runner.start(ctx, store, p, args, copyFrom, ext)
+        go("console", id)
+    }
+
+    val afterGrant: () -> Unit = {
+        val a = accessFor
+        accessFor = null
+        if (a != null) startExtract(a.first, a.second)
+    }
+    val grantLegacy = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> afterGrant() }
+    val grantAll = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { _ -> afterGrant() }
+
     val pickDisc = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri != null) {
             val ext = "." + Files.displayName(ctx, uri).substringAfterLast('.', "").lowercase()
             if (ext != ".iso" && ext != ".wbfs") {
                 msg = "DolRecomp only reads plain .iso or .wbfs images (this one is “$ext”). Compressed formats like .rvz, .gcz, .ciso or .nkit need converting to .iso first."
-                return@rememberLauncherForActivityResult
+            } else {
+                runCatching { ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+                if (Files.hasStorageAccess(ctx)) startExtract(uri, ext)
+                else { accessFor = uri to ext; showAccess = true }
             }
-            runCatching { ctx.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
-            update(p.copy(discUri = uri.toString()))
-            val wit = File(ctx.applicationInfo.nativeLibraryDir, "libwit.so")
-            val args = buildList {
-                add("extract")
-                if (wit.exists()) { add("--wit"); add(wit.path) }
-                add("{DISC}"); add(store.discDir(p).path)
-            }
-            Runner.start(ctx, store, p, args, uri.toString(), ext)
-            go("console", id)
         }
     }
 
-    val extractedDol = File(store.discDir(p), "sys/main.dol")
+    val extractRoot = if (p.extractDir.isNotBlank()) File(p.extractDir) else store.discDir(p)
+    val extractedDol = File(extractRoot, "sys/main.dol")
     val err = store.readyError(p)
     val command = "dolrecomp " + store.buildArgs(p).joinToString(" ")
     val busy = status == "running" || status == "starting"
@@ -158,7 +194,8 @@ fun DetailScreen(store: ProjectStore, id: String, go: Go) {
                 OutlinedTextField(p.titleId.uppercase(), { update(p.copy(titleId = it.take(6))) }, label = { Text("Wii title ID (6 chars)") }, singleLine = true, modifier = Modifier.fillMaxWidth())
 
             Text("Disc image", style = MaterialTheme.typography.titleMedium)
-            Text("Pick a GameCube .iso (extracted by the built-in reader) or a Wii .iso/.wbfs (needs the external “wit” tool, which this build doesn't include yet).", style = MaterialTheme.typography.bodySmall)
+            Text("Pick a GameCube .iso. It is extracted into a folder named after the ISO, next to it (the app asks for file access once; without it, the app's own folder is used). Wii .iso/.wbfs also needs the external “wit” tool, which this build doesn't include yet.", style = MaterialTheme.typography.bodySmall)
+            if (p.extractDir.isNotBlank()) Text("Last extracted to: ${p.extractDir}", style = MaterialTheme.typography.bodySmall)
             OutlinedButton(onClick = { pickDisc.launch(arrayOf("*/*")) }, Modifier.fillMaxWidth(), enabled = !busy) { Text("Extract a disc image…") }
 
             Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
@@ -201,7 +238,9 @@ fun DetailScreen(store: ProjectStore, id: String, go: Go) {
 
     if (choosing) {
         val base = store.dir(p)
-        val cands = remember(choosing) { Files.inputCandidates(base) }
+        val cands = remember(choosing) {
+            (Files.inputCandidates(base) + if (extractRoot.path.startsWith(base.path)) emptyList() else Files.inputCandidates(extractRoot)).distinct()
+        }
         AlertDialog(
             onDismissRequest = { choosing = false },
             confirmButton = {},
@@ -211,12 +250,28 @@ fun DetailScreen(store: ProjectStore, id: String, go: Go) {
                 if (cands.isEmpty()) Text("Nothing here yet. Import a file or extract a disc first.")
                 else LazyColumn {
                     items(cands) { f ->
-                        TextButton(onClick = { update(p.copy(input = f.path)); choosing = false }) { Text(f.relativeTo(base).path) }
+                        TextButton(onClick = { update(p.copy(input = f.path)); choosing = false }) { Text(if (f.path.startsWith(base.path)) f.relativeTo(base).path else f.path) }
                     }
                 }
             },
         )
     }
+    if (showAccess) AlertDialog(
+        onDismissRequest = { showAccess = false; afterGrant() },
+        title = { Text("Allow file access?") },
+        text = { Text("To extract next to the disc image, DolRecomp needs permission to read and write files in shared storage. If you skip this, the disc is extracted into the app's own folder instead.") },
+        confirmButton = {
+            TextButton(onClick = {
+                showAccess = false
+                if (Build.VERSION.SDK_INT >= 30) {
+                    val pkg = Uri.parse("package:" + ctx.packageName)
+                    runCatching { grantAll.launch(Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION, pkg)) }
+                        .onFailure { grantAll.launch(Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)) }
+                } else grantLegacy.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+            }) { Text("Grant access") }
+        },
+        dismissButton = { TextButton(onClick = { showAccess = false; afterGrant() }) { Text("Use app folder") } },
+    )
     if (confirmDelete) AlertDialog(
         onDismissRequest = { confirmDelete = false },
         title = { Text("Delete “${p.name}”?") },

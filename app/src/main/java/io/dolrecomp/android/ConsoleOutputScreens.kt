@@ -92,6 +92,7 @@ fun OutputScreen(store: ProjectStore, id: String, go: Go) {
         Column(Modifier.padding(pad).padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Text("${files.size} files · ${Files.human(total)}", style = MaterialTheme.typography.titleMedium)
             Text("Folder: ${store.outDir(p).path}", style = MaterialTheme.typography.bodySmall)
+            Text("This lists recompile output only. Extracted disc files are in: ${p.extractDir.ifBlank { store.discDir(p).path }}", style = MaterialTheme.typography.bodySmall)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Button(onClick = { export.launch("${p.name.replace(' ', '_')}-generated.zip") }, enabled = files.isNotEmpty()) { Text("Export as .zip") }
                 OutlinedButton(onClick = {
