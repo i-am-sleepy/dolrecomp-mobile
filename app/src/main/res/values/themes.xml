@@ -1,0 +1,3 @@
+<resources>
+    <style name="Theme.DolRecomp" parent="android:Theme.Material.NoActionBar" />
+</resources>
